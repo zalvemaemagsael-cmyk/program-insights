@@ -86,7 +86,7 @@ msmes["refund_pct"]     = (msmes["refund_paid"] / msmes["refund_total"] * 100).r
 msmes["sales_growth_pct"] = ((msmes["sales_s2_2024"] - msmes["sales_s1_2024"]) / msmes["sales_s1_2024"] * 100).round(1)
 msmes["sales_latest"]     = msmes["sales_s2_2024"]
 
-# Delinquency scoring
+# Project completion risk scoring
 def score(row):
     s = 0
     if row["refund_pct"] < 15:  s += 4
@@ -250,7 +250,7 @@ if priority_ct == 0:
     priority_ct = len(priority_df)
 
 # Areas Requiring Attention: combine Province + Sector rankings into one "top 10" list,
-# ranked by average delinquency risk score (highest risk first).
+# ranked by average completion risk score (highest risk first).
 prov_area = msmes.groupby("province").agg(
     avg_risk_score=("d_score","mean"),
     msme_count=("name","count"),
@@ -300,7 +300,7 @@ st.markdown(f"""
   <div class="kpi">
     <div class="kpi-label">High Risk</div>
     <div class="kpi-value c-red">{high_ct}</div>
-    <div class="kpi-sub">High or Critical delinquency</div>
+    <div class="kpi-sub">High or Critical completion risk</div>
   </div>
   <div class="kpi">
     <div class="kpi-label">Accomplishment</div>
@@ -385,7 +385,7 @@ fig_areas = px.bar(
     color_discrete_map={"Province":"#6366f1","Sector":"#f59e0b"},
     text="avg_risk_score",
     hover_data={"msme_count":True, "high_risk_count":True, "acc_rate":":.1f", "area_type":True},
-    labels={"avg_risk_score":"Avg Delinquency Risk Score","area":"","area_type":"Type"},
+    labels={"avg_risk_score":"Avg Completion Risk Score","area":"","area_type":"Type"},
 )
 fig_areas.update_traces(texttemplate="%{text:.1f}", textposition="outside")
 fig_areas.update_layout(
@@ -395,7 +395,7 @@ fig_areas.update_layout(
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font_size=10),
 )
 st.plotly_chart(fig_areas, use_container_width=True)
-st.caption("💡 Ranked by average delinquency risk score, highest first · combines both province-level and sector-level views.")
+st.caption("💡 Ranked by average completion risk score, highest first · combines both province-level and sector-level views.")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SECTION 4 — MSMEs REQUIRING IMMEDIATE INTERVENTION (INTERACTIVE TABLE)
@@ -429,12 +429,12 @@ if len(intervention_df) > 0:
             "Assistance (PHP)": st.column_config.NumberColumn("Assistance (PHP)", format="₱%d"),
         },
     )
-    st.caption(f"⚠️ {len(intervention_df)} MSME(s) flagged — underperforming in outputs and/or classified High/Critical delinquency risk. Table is sortable by clicking any column header.")
+    st.caption(f"⚠️ {len(intervention_df)} MSME(s) flagged — underperforming in outputs and/or classified High/Critical risk of not completing the project. Table is sortable by clicking any column header.")
 else:
     st.markdown("""
 <div class="insight-box">
   <h4>✅ No MSMEs currently require immediate intervention</h4>
-  <p>No MSME is simultaneously underperforming in outputs and classified as High/Critical delinquency risk.</p>
+  <p>No MSME is simultaneously underperforming in outputs and classified as High/Critical risk of not completing the project.</p>
 </div>
 """, unsafe_allow_html=True)
 
