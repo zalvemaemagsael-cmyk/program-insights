@@ -2,6 +2,8 @@ import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 import pandas as pd
+import json
+import urllib.request
 
 st.set_page_config(
     page_title="Program Insights – DOST SETUP 4.0 iFund",
@@ -86,7 +88,7 @@ msmes["refund_pct"]     = (msmes["refund_paid"] / msmes["refund_total"] * 100).r
 msmes["sales_growth_pct"] = ((msmes["sales_s2_2024"] - msmes["sales_s1_2024"]) / msmes["sales_s1_2024"] * 100).round(1)
 msmes["sales_latest"]     = msmes["sales_s2_2024"]
 
-# Project completion risk scoring
+# Delinquency scoring
 def score(row):
     s = 0
     if row["refund_pct"] < 15:  s += 4
@@ -201,35 +203,45 @@ impact = impact.merge(msmes[["name","province","sector","org_type","msme_type","
 SEM_ORDER = ["S2 2021","S1 2023","S2 2023","S1 2024","S2 2024"]
 
 # ══════════════════════════════════════════════════════════════════════════════
-# COMPUTED METRICS
+# PAGE HEADER + TIME SLICER
+# ══════════════════════════════════════════════════════════════════════════════
+
+st.markdown('<div class="page-title">Program Insights</div>', unsafe_allow_html=True)
+st.markdown('<div class="page-sub">DOST SETUP 4.0 iFund Program — Region VI</div>', unsafe_allow_html=True)
+
+sem_start, sem_end = st.select_slider(
+    "Assessment period",
+    options=SEM_ORDER,
+    value=(SEM_ORDER[0], SEM_ORDER[-1]),
+)
+_lo, _hi = SEM_ORDER.index(sem_start), SEM_ORDER.index(sem_end)
+selected_semesters = SEM_ORDER[_lo:_hi+1]
+impact_f = impact[impact["semester"].isin(selected_semesters)]
+
+# ══════════════════════════════════════════════════════════════════════════════
+# COMPUTED METRICS (reflect the selected assessment period above)
 # ══════════════════════════════════════════════════════════════════════════════
 
 total_msmes   = len(msmes)
-total_outputs = len(impact)
-acc_count     = (impact["verdict"] == "Accomplished").sum()
-part_count    = (impact["verdict"] == "Partially accomplished").sum()
-not_count     = (impact["verdict"] == "Not accomplished").sum()
-acc_pct       = round(acc_count / total_outputs * 100, 1)
+total_outputs = len(impact_f)
+acc_count     = (impact_f["verdict"] == "Accomplished").sum()
+part_count    = (impact_f["verdict"] == "Partially accomplished").sum()
+not_count     = (impact_f["verdict"] == "Not accomplished").sum()
+acc_pct       = round(acc_count / total_outputs * 100, 1) if total_outputs else 0.0
 at_risk       = msmes[msmes["risk"].isin(["High","Critical"])]["name"].tolist()
 compliant     = msmes[~msmes["risk"].isin(["High","Critical"])]["name"].tolist()
 
 # MSMEs underperforming in impact AND flagged high risk
-msme_acc_rate = impact.groupby("msme").apply(lambda x: (x["verdict"]=="Accomplished").sum()/len(x)*100).reset_index()
+msme_acc_rate = impact_f.groupby("msme").apply(lambda x: (x["verdict"]=="Accomplished").sum()/len(x)*100).reset_index()
 msme_acc_rate.columns = ["msme","acc_rate"]
 msme_acc_rate = msme_acc_rate.merge(msmes[["name","risk","sector","province","org_type"]], left_on="msme", right_on="name", how="left")
 dual_flag = msme_acc_rate[(msme_acc_rate["acc_rate"] < 60) & (msme_acc_rate["risk"].isin(["High","Critical"]))]
-
-# Semester trend
-sem_trend = impact.groupby("semester").apply(lambda x: round((x["verdict"]=="Accomplished").sum()/len(x)*100,1)).reset_index()
-sem_trend.columns = ["semester","acc_pct"]
-sem_trend["semester"] = pd.Categorical(sem_trend["semester"], categories=SEM_ORDER, ordered=True)
-sem_trend = sem_trend.sort_values("semester")
 
 # Province avg risk score
 prov_risk = msmes.groupby("province").agg(avg_score=("d_score","mean"), count=("name","count")).reset_index()
 
 # Sector comparison
-sector_impact = impact.groupby("sector").apply(lambda x: round((x["verdict"]=="Accomplished").sum()/len(x)*100,1)).reset_index()
+sector_impact = impact_f.groupby("sector").apply(lambda x: round((x["verdict"]=="Accomplished").sum()/len(x)*100,1)).reset_index()
 sector_impact.columns = ["sector","acc_rate"]
 sector_risk = msmes.groupby("sector")["d_score"].mean().reset_index()
 sector_risk.columns = ["sector","avg_risk_score"]
@@ -250,7 +262,7 @@ if priority_ct == 0:
     priority_ct = len(priority_df)
 
 # Areas Requiring Attention: combine Province + Sector rankings into one "top 10" list,
-# ranked by average completion risk score (highest risk first).
+# ranked by average delinquency risk score (highest risk first).
 prov_area = msmes.groupby("province").agg(
     avg_risk_score=("d_score","mean"),
     msme_count=("name","count"),
@@ -258,10 +270,14 @@ prov_area = msmes.groupby("province").agg(
 ).reset_index().rename(columns={"province":"area"})
 prov_area["area_type"] = "Province"
 
-# Accomplishment rate by province / sector, computed straight from `impact` for accuracy
-prov_acc = impact.groupby("province").apply(lambda x: round((x["verdict"]=="Accomplished").sum()/len(x)*100,1)).reset_index()
+# Accomplishment rate by province / sector, computed from the filtered `impact_f`
+if len(impact_f):
+    prov_acc = impact_f.groupby("province").apply(lambda x: round((x["verdict"]=="Accomplished").sum()/len(x)*100,1)).reset_index()
+else:
+    prov_acc = pd.DataFrame(columns=["province","acc_rate"])
 prov_acc.columns = ["area","acc_rate"]
 prov_area = prov_area.merge(prov_acc, on="area", how="left")
+prov_area["acc_rate"] = prov_area["acc_rate"].fillna(0)
 
 sect_area = msmes.groupby("sector").agg(
     avg_risk_score=("d_score","mean"),
@@ -269,19 +285,16 @@ sect_area = msmes.groupby("sector").agg(
     high_risk_count=("risk", lambda x: x.isin(["High","Critical"]).sum()),
 ).reset_index().rename(columns={"sector":"area"})
 sect_area["area_type"] = "Sector"
-sect_acc = impact.groupby("sector").apply(lambda x: round((x["verdict"]=="Accomplished").sum()/len(x)*100,1)).reset_index()
+if len(impact_f):
+    sect_acc = impact_f.groupby("sector").apply(lambda x: round((x["verdict"]=="Accomplished").sum()/len(x)*100,1)).reset_index()
+else:
+    sect_acc = pd.DataFrame(columns=["sector","acc_rate"])
 sect_acc.columns = ["area","acc_rate"]
 sect_area = sect_area.merge(sect_acc, on="area", how="left")
+sect_area["acc_rate"] = sect_area["acc_rate"].fillna(0)
 
 areas_attention = pd.concat([prov_area, sect_area], ignore_index=True)
 areas_attention = areas_attention.sort_values("avg_risk_score", ascending=False).head(10).reset_index(drop=True)
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PAGE HEADER
-# ══════════════════════════════════════════════════════════════════════════════
-
-st.markdown('<div class="page-title">Program Insights</div>', unsafe_allow_html=True)
-st.markdown('<div class="page-sub">DOST SETUP 4.0 iFund Program — Region VI &nbsp;·&nbsp; Aggregate view across all enrolled MSMEs</div>', unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SECTION 1 — KPI CARDS
@@ -300,7 +313,7 @@ st.markdown(f"""
   <div class="kpi">
     <div class="kpi-label">High Risk</div>
     <div class="kpi-value c-red">{high_ct}</div>
-    <div class="kpi-sub">High or Critical completion risk</div>
+    <div class="kpi-sub">High or Critical delinquency</div>
   </div>
   <div class="kpi">
     <div class="kpi-label">Accomplishment</div>
@@ -352,7 +365,7 @@ with col_donut:
 
 with col_stack:
     st.markdown('<div class="section-title">Program Performance</div>', unsafe_allow_html=True)
-    msme_rates = impact.groupby("msme")["verdict"].value_counts(normalize=True).mul(100).round(1).unstack(fill_value=0).reset_index()
+    msme_rates = impact_f.groupby("msme")["verdict"].value_counts(normalize=True).mul(100).round(1).unstack(fill_value=0).reset_index()
     for col in ["Accomplished","Partially accomplished","Not accomplished"]:
         if col not in msme_rates.columns:
             msme_rates[col] = 0
@@ -374,6 +387,56 @@ with col_stack:
     st.plotly_chart(fig_stack, use_container_width=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
+# SECTION 2B — PROVINCIAL RISK MAP (CHOROPLETH)
+# ══════════════════════════════════════════════════════════════════════════════
+GEOJSON_URL = "https://raw.githubusercontent.com/faeldon/philippines-json-maps/master/2023/geojson/regions/lowres/provdists-region-600000000.0.001.json"
+
+@st.cache_data(show_spinner=False)
+def load_region6_geojson():
+    try:
+        with urllib.request.urlopen(GEOJSON_URL, timeout=10) as resp:
+            return json.load(resp)
+    except Exception:
+        return None
+
+region_geojson = load_region6_geojson()
+
+st.markdown('<div class="section-title">Provincial Risk Map — Region VI</div>', unsafe_allow_html=True)
+
+if region_geojson:
+    all_provinces = [f["properties"]["adm2_en"] for f in region_geojson["features"]]
+    map_df = pd.DataFrame({"area": all_provinces}).merge(
+        prov_area[["area","avg_risk_score","msme_count","high_risk_count","acc_rate"]], on="area", how="left"
+    )
+    for c in ["avg_risk_score","msme_count","high_risk_count","acc_rate"]:
+        map_df[c] = map_df[c].fillna(0)
+
+    fig_map = px.choropleth_map(
+        map_df,
+        geojson=region_geojson,
+        locations="area",
+        featureidkey="properties.adm2_en",
+        color="avg_risk_score",
+        color_continuous_scale="Reds",
+        range_color=(0, max(msmes["d_score"].max(), 1)),
+        hover_name="area",
+        hover_data={"msme_count":True, "high_risk_count":True, "acc_rate":":.1f", "avg_risk_score":":.1f"},
+        map_style="carto-positron",
+        center={"lat": 11.0, "lon": 122.6},
+        zoom=6.6,
+        opacity=0.85,
+        labels={"avg_risk_score":"Avg Risk Score","msme_count":"MSMEs","high_risk_count":"High/Critical","acc_rate":"Accomplishment %"},
+    )
+    fig_map.update_layout(
+        height=380,
+        margin=dict(t=10,b=0,l=0,r=0),
+        coloraxis_colorbar=dict(title="Avg Risk", len=0.7),
+    )
+    st.plotly_chart(fig_map, use_container_width=True)
+else:
+    st.info("Map boundaries unavailable — check network access.")
+
+# ══════════════════════════════════════════════════════════════════════════════
 # SECTION 3 — AREAS REQUIRING ATTENTION (TOP 10 PROVINCES / SECTORS)
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown('<div class="section-title">Areas Requiring Attention — Top Provinces &amp; Sectors</div>', unsafe_allow_html=True)
@@ -385,7 +448,7 @@ fig_areas = px.bar(
     color_discrete_map={"Province":"#6366f1","Sector":"#f59e0b"},
     text="avg_risk_score",
     hover_data={"msme_count":True, "high_risk_count":True, "acc_rate":":.1f", "area_type":True},
-    labels={"avg_risk_score":"Avg Completion Risk Score","area":"","area_type":"Type"},
+    labels={"avg_risk_score":"Avg Delinquency Risk Score","area":"","area_type":"Type"},
 )
 fig_areas.update_traces(texttemplate="%{text:.1f}", textposition="outside")
 fig_areas.update_layout(
@@ -395,7 +458,6 @@ fig_areas.update_layout(
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font_size=10),
 )
 st.plotly_chart(fig_areas, use_container_width=True)
-st.caption("💡 Ranked by average completion risk score, highest first · combines both province-level and sector-level views.")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SECTION 4 — MSMEs REQUIRING IMMEDIATE INTERVENTION (INTERACTIVE TABLE)
@@ -429,14 +491,14 @@ if len(intervention_df) > 0:
             "Assistance (PHP)": st.column_config.NumberColumn("Assistance (PHP)", format="₱%d"),
         },
     )
-    st.caption(f"⚠️ {len(intervention_df)} MSME(s) flagged — underperforming in outputs and/or classified High/Critical risk of not completing the project. Table is sortable by clicking any column header.")
+    st.caption(f"⚠️ {len(intervention_df)} MSME(s) flagged for immediate intervention.")
 else:
     st.markdown("""
 <div class="insight-box">
   <h4>✅ No MSMEs currently require immediate intervention</h4>
-  <p>No MSME is simultaneously underperforming in outputs and classified as High/Critical risk of not completing the project.</p>
+  <p>No MSME is simultaneously underperforming in outputs and classified as High/Critical delinquency risk.</p>
 </div>
 """, unsafe_allow_html=True)
 
 st.markdown('<hr class="divider">', unsafe_allow_html=True)
-st.markdown('<div style="text-align:center;font-size:11px;color:#ccc;">DOST-VI SETUP 4.0 iFund Program · Region VI · ASENXO Program Insights</div>', unsafe_allow_html=True)
+st.markdown('<div style="text-align:center;font-size:11px;color:#ccc;">DOST-VI SETUP 4.0 iFund Program · Region VI</div>', unsafe_allow_html=True)
